@@ -2,8 +2,6 @@ from aiogram.types import InlineKeyboardButton, InlineKeyboardMarkup
 from aiogram.utils.keyboard import InlineKeyboardBuilder
 from utils.constants import SHORT_SDG_TITLES
 
-
-
 def get_sdg_list_kb():
     """Клавиатура со списком 17 ЦУР (с краткими названиями)"""
     builder = InlineKeyboardBuilder()
