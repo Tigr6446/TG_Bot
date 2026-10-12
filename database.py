@@ -10,9 +10,6 @@ DATABASE_URL = os.getenv("DATABASE_URL")
 if not DATABASE_URL:
     raise ValueError("❌ DATABASE_URL не задан!")
 
-# Ensure the URL uses the asyncpg driver required by create_async_engine.
-# Railway (and other providers) may supply a plain postgresql:// or
-# postgresql+psycopg2:// URL, neither of which works with the async engine.
 for prefix in ("postgresql+psycopg2://", "postgresql://", "postgres://"):
     if DATABASE_URL.startswith(prefix):
         DATABASE_URL = "postgresql+asyncpg://" + DATABASE_URL[len(prefix):]
