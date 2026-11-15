@@ -1,6 +1,8 @@
 from sqlalchemy import Column, Integer, BigInteger, String, DateTime, Text, UniqueConstraint
 from sqlalchemy.ext.declarative import declarative_base
 from datetime import datetime
+from sqlalchemy import Boolean
+
 
 Base = declarative_base()
 
@@ -134,3 +136,9 @@ class SDGContent(Base):
     __table_args__ = (
         UniqueConstraint('sdg_id', 'age_group', name='uq_sdg_age'),
     )
+
+class BotSettings(Base):
+    __tablename__ = "bot_settings"
+    
+    id = Column(Integer, primary_key=True, default=1)
+    is_contest_active = Column(Boolean, default=True) # Включен ли конкурс

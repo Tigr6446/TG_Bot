@@ -1,5 +1,5 @@
 from aiogram import Router, F
-from aiogram.types import CallbackQuery, Message
+from aiogram.types import CallbackQuery, Message, InlineKeyboardButton
 from aiogram.fsm.context import FSMContext
 from aiogram.fsm.state import State, StatesGroup
 from aiogram.utils.keyboard import InlineKeyboardBuilder
@@ -28,12 +28,12 @@ async def start_manage_sdg(callback: CallbackQuery):
     for i in range(1, 18):
         builder.button(text=SHORT_SDG_TITLES[i], callback_data=f"edit_sdg_{i}")
     builder.adjust(2)
-    builder.row(InlineKeyboardBuilder().button(text="◀️ Назад", callback_data="admin_back").buttons[0])
+    builder.row(InlineKeyboardButton(text="◀️ Назад в админку", callback_data="admin_back_to_help"))
     
     await callback.message.edit_text("Выберите ЦУР для редактирования:", reply_markup=builder.as_markup())
     await callback.answer()
 
-# 2. Выбор возраста для выбранной ЦУР
+# 2. Выбор возраста
 @router.callback_query(F.data.startswith("edit_sdg_"), F.func(is_admin_cb))
 async def choose_age(callback: CallbackQuery):
     sdg_id = int(callback.data.split("_")[2])
@@ -42,60 +42,162 @@ async def choose_age(callback: CallbackQuery):
     builder.button(text="5-8 класс", callback_data=f"edit_age_{sdg_id}_5-8")
     builder.button(text="9-11 класс", callback_data=f"edit_age_{sdg_id}_9-11")
     builder.button(text="Для всех", callback_data=f"edit_age_{sdg_id}_all")
-    builder.adjust(1)
+    builder.adjust(2)
+    builder.row(InlineKeyboardButton(text="◀️ Назад к списку ЦУР", callback_data="admin_manage_sdg"))
     
     await callback.message.edit_text(f"Выберите возрастную группу для ЦУР {sdg_id}:", reply_markup=builder.as_markup())
     await callback.answer()
 
-# 3. Ожидание текста
+# 3. Меню редактирования (Показывает текущий контент и кнопки действий)
+async def show_content_menu(message_or_callback, sdg_id: int, age_group: str, edit_message=True):
+    async with AsyncSessionLocal() as session:
+        stmt = select(SDGContent).where(
+            (SDGContent.sdg_id == sdg_id) & 
+            (SDGContent.age_group == age_group)
+        )
+        content = await session.scalar(stmt)
+
+    text_desc = content.description if content and content.description else "❌ Текст не задан"
+    video_url = content.video_url if content and content.video_url else "❌ Видео не задано"
+
+    text = (
+        f"⚙️ <b>Редактирование ЦУР {sdg_id}</b> (Возраст: {age_group})\n\n"
+        f"<b>Текущий текст:</b>\n<i>{text_desc}</i>\n\n"
+        f"<b>Текущее видео:</b> {video_url}"
+    )
+
+    builder = InlineKeyboardBuilder()
+    builder.row(
+        InlineKeyboardButton(text="✏️ Изменить текст", callback_data=f"edit_text_{sdg_id}_{age_group}"),
+        InlineKeyboardButton(text="🎥 Изменить видео", callback_data=f"edit_video_{sdg_id}_{age_group}")
+    )
+    builder.row(InlineKeyboardButton(text="🗑 Очистить контент", callback_data=f"edit_clear_{sdg_id}_{age_group}"))
+    builder.row(InlineKeyboardButton(text="◀️ Назад к выбору возраста", callback_data=f"edit_sdg_{sdg_id}"))
+
+    if edit_message and hasattr(message_or_callback, 'message'):
+        await message_or_callback.message.edit_text(text, reply_markup=builder.as_markup(), parse_mode=ParseMode.HTML)
+    else:
+        await message_or_callback.answer(text, reply_markup=builder.as_markup(), parse_mode=ParseMode.HTML)
+
 @router.callback_query(F.data.startswith("edit_age_"), F.func(is_admin_cb))
-async def wait_for_text(callback: CallbackQuery, state: FSMContext):
+async def open_content_menu(callback: CallbackQuery):
+    parts = callback.data.split("_")
+    sdg_id = int(parts[2])
+    age = parts[3]
+    await show_content_menu(callback, sdg_id, age)
+    await callback.answer()
+
+# 4. Редактирование ТЕКСТА
+@router.callback_query(F.data.startswith("edit_text_"), F.func(is_admin_cb))
+async def start_edit_text(callback: CallbackQuery, state: FSMContext):
     parts = callback.data.split("_")
     sdg_id = int(parts[2])
     age = parts[3]
     
-    await state.update_data(sdg_id=sdg_id, age_group=age)
+    await state.update_data(sdg_id=sdg_id, age_group=age, action="text")
     await state.set_state(ContentForm.waiting_text)
     
     await callback.message.edit_text(
-        f"Введите текст описания для ЦУР {sdg_id} (возраст: {age}).\n"
-        "Если хотите оставить текущий текст без изменений, отправьте `/skip`."
+        f"✏️ Введите новый текст описания для ЦУР {sdg_id} (возраст: {age}).\n\n"
+        f"Отправьте текст одним сообщением.",
+        reply_markup=InlineKeyboardBuilder().row(
+            InlineKeyboardButton(text="❌ Отмена", callback_data=f"edit_age_{sdg_id}_{age}")
+        ).as_markup()
     )
     await callback.answer()
 
-# 4. Сохранение текста и запрос видео
-@router.message(ContentForm.waiting_text)
-async def save_text(message: Message, state: FSMContext):
-    data = await state.get_data()
-    text = message.text if message.text != "/skip" else None
-    await state.update_data(description=text)
+# 5. Редактирование ВИДЕО
+@router.callback_query(F.data.startswith("edit_video_"), F.func(is_admin_cb))
+async def start_edit_video(callback: CallbackQuery, state: FSMContext):
+    parts = callback.data.split("_")
+    sdg_id = int(parts[2])
+    age = parts[3]
+    
+    await state.update_data(sdg_id=sdg_id, age_group=age, action="video")
     await state.set_state(ContentForm.waiting_video)
     
-    await message.answer("Отлично! Теперь отправьте ссылку на видео (YouTube/Rutube) или напишите `/skip`.")
+    await callback.message.edit_text(
+        f"🎥 Отправьте ссылку на видео (YouTube/Rutube) для ЦУР {sdg_id} (возраст: {age}).\n\n"
+        f"Ссылка должна начинаться с http:// или https://",
+        reply_markup=InlineKeyboardBuilder().row(
+            InlineKeyboardButton(text="❌ Отмена", callback_data=f"edit_age_{sdg_id}_{age}")
+        ).as_markup()
+    )
+    await callback.answer()
 
-# 5. Сохранение видео и запись в БД
-@router.message(ContentForm.waiting_video)
-async def save_video(message: Message, state: FSMContext):
+# Прием текста
+@router.message(ContentForm.waiting_text, F.func(lambda msg: msg.from_user.id in ADMIN_IDS))
+async def save_text(message: Message, state: FSMContext):
     data = await state.get_data()
-    video_url = message.text if message.text != "/skip" else None
-    
+    sdg_id, age = data['sdg_id'], data['age_group']
+    new_text = message.text
+
     async with AsyncSessionLocal() as session:
-        # Используем UPSERT (вставить или обновить)
+        # Обновляем только текст, видео оставляем как было
         stmt = insert(SDGContent).values(
-            sdg_id=data['sdg_id'],
-            age_group=data['age_group'],
-            description=data['description'] or "Текст будет добавлен позже.",
-            video_url=video_url
+            sdg_id=sdg_id, age_group=age, description=new_text, video_url=None
         )
         stmt = stmt.on_conflict_do_update(
             constraint='uq_sdg_age',
-            set_=dict(
-                description=stmt.excluded.description,
-                video_url=stmt.excluded.video_url
-            )
+            set_=dict(description=new_text)
         )
         await session.execute(stmt)
         await session.commit()
-    
-    await message.answer("✅ Контент успешно сохранен в базу!")
+
     await state.clear()
+    await message.answer("✅ Текст успешно сохранен!")
+    await show_content_menu(message, sdg_id, age, edit_message=False)
+
+# Прием видео
+@router.message(ContentForm.waiting_video, F.func(lambda msg: msg.from_user.id in ADMIN_IDS))
+async def save_video(message: Message, state: FSMContext):
+    data = await state.get_data()
+    sdg_id, age = data['sdg_id'], data['age_group']
+    url = message.text.strip()
+
+    if not url.startswith("http"):
+        await message.answer("❌ Это не похоже на ссылку. Ссылка должна начинаться с http:// или https://\nПопробуйте еще раз.")
+        return
+
+    async with AsyncSessionLocal() as session:
+        stmt = insert(SDGContent).values(
+            sdg_id=sdg_id, age_group=age, description="Текст будет добавлен позже.", video_url=url
+        )
+        stmt = stmt.on_conflict_do_update(
+            constraint='uq_sdg_age',
+            set_=dict(video_url=url)
+        )
+        await session.execute(stmt)
+        await session.commit()
+
+    await state.clear()
+    await message.answer("✅ Ссылка на видео сохранена!")
+    await show_content_menu(message, sdg_id, age, edit_message=False)
+
+# Очистка контента
+@router.callback_query(F.data.startswith("edit_clear_"), F.func(is_admin_cb))
+async def clear_content(callback: CallbackQuery):
+    parts = callback.data.split("_")
+    sdg_id = int(parts[2])
+    age = parts[3]
+    
+    async with AsyncSessionLocal() as session:
+        stmt = select(SDGContent).where((SDGContent.sdg_id == sdg_id) & (SDGContent.age_group == age))
+        content = await session.scalar(stmt)
+        if content:
+            await session.delete(content)
+            await session.commit()
+            
+    await callback.answer("🗑 Контент удален!", show_alert=True)
+    await show_content_menu(callback, sdg_id, age)
+
+# Обработчик возврата в админку
+@router.callback_query(F.data == "admin_back_to_help", F.func(is_admin_cb))
+async def back_to_help(callback: CallbackQuery):
+    from keyboards.admin_kb import get_admin_help_kb
+    await callback.message.edit_text(
+        "👑 <b>Панель администратора:</b>\nВыберите действие на кнопках ниже.",
+        reply_markup=get_admin_help_kb(),
+        parse_mode="HTML"
+    )
+    await callback.answer()

@@ -6,7 +6,7 @@ from aiogram.enums import ParseMode
 from sqlalchemy import select
 
 from database import AsyncSessionLocal
-from models import VideoContest
+from models import VideoContest, BotSettings
 from keyboards.contest_kb import get_contest_start_kb, get_contest_admin_kb
 from keyboards.main_menu_kb import get_main_kb
 from config import ADMIN_CHAT_ID, ADMIN_IDS
@@ -17,18 +17,39 @@ class ContestForm(StatesGroup):
     waiting_video = State()
     waiting_description = State()
 
+# ЕДИНСТВЕННЫЙ ОБРАБОТЧИК КНОПКИ КОНКУРСА
 @router.callback_query(F.data == "menu_contest")
 async def start_contest(callback: CallbackQuery, state: FSMContext):
+    # Проверяем настройки модуля
+    async with AsyncSessionLocal() as session:
+        settings = await session.scalar(select(BotSettings).where(BotSettings.id == 1))
+        if not settings.is_contest_active:
+            await callback.message.answer(
+                "🎥 <b>Конкурс «Я есть ЦУР»</b>\n\n"
+                "😔 К сожалению, прием работ на конкурс уже завершен.\n"
+                "Следите за новостями, мы обязательно объявим о новом этапе!",
+                parse_mode=ParseMode.HTML
+            )
+            await callback.answer()
+            return
+    
+    # Если конкурс включен — запускаем FSM
     await state.set_state(ContestForm.waiting_video)
-    # ИСПОЛЬЗУЕМ answer ВМЕСТО edit_text, чтобы не падать на удаленном сообщении
     await callback.message.answer(
         "🎥 <b>Конкурс «Я есть ЦУР»</b>\n\n"
-        "Пришлите ваше видео (или файл) сюда. Оно должно быть посвящено одной из ЦУР.\n"
-        "Для отмены используйте /cancel",
+        "Пришлите ваше видео (или файл) сюда. Оно должно быть посвящено одной из ЦУР.",
         reply_markup=get_contest_start_kb(),
         parse_mode=ParseMode.HTML
     )
     await callback.answer()
+
+# Ловим старое сообщение с кнопкой загрузки (чтобы не висело)
+@router.callback_query(F.data == "contest_upload")
+async def handle_old_upload_button(callback: CallbackQuery):
+    await callback.answer(
+        "Просто отправьте видео следующим сообщением в чат (скрепка -> Видео/Файл).", 
+        show_alert=True
+    )
 
 @router.message(ContestForm.waiting_video, F.video | F.document)
 async def process_video(message: Message, state: FSMContext):
@@ -109,12 +130,11 @@ async def approve_contest(callback: CallbackQuery, bot: Bot):
             entry.status = "approved"
             await session.commit()
             
-            # Безопасное изменение подписи (если caption есть)
             old_caption = callback.message.caption or ""
             await callback.message.edit_caption(
                 caption=old_caption + "\n\n✅ <b>СТАТУС: ПРИНЯТО</b>",
                 parse_mode=ParseMode.HTML,
-                reply_markup=None # убираем кнопки, чтобы нельзя было нажать дважды
+                reply_markup=None 
             )
             try:
                 await bot.send_message(

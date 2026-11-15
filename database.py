@@ -1,7 +1,8 @@
 import os
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 from dotenv import load_dotenv
-from models import Base
+from sqlalchemy import select
+from models import Base, BotSettings
 
 load_dotenv()
 
@@ -22,12 +23,11 @@ for prefix in ("postgresql+psycopg2://", "postgresql://", "postgres://"):
 # Создаем асинхронный движок
 engine = create_async_engine(
     DATABASE_URL,
-    connect_args={"ssl": "require"}, # Для Pterodactyl/внешних БД
-    pool_pre_ping=True,              # Проверка соединения перед использованием (решает твою ошибку)
-    pool_recycle=1800                # Пересоздание соединений раз в 30 минут
+    connect_args={"ssl": "require"},
+    pool_pre_ping=True,
+    pool_recycle=1800
 )
 
-# Инициализируем сессии
 AsyncSessionLocal = async_sessionmaker(engine, expire_on_commit=False)
 
 async def get_db():
@@ -35,5 +35,14 @@ async def get_db():
         yield session
 
 async def create_table():
+    # 1. Создаем таблицы (открываем соединение и закрываем его)
     async with engine.begin() as conn:
         await conn.run_sync(Base.metadata.create_all)
+        
+    # 2. Проверяем настройки (открываем сессию уже ПОСЛЕ закрытия соединения)
+    async with AsyncSessionLocal() as session:
+        stmt = select(BotSettings).where(BotSettings.id == 1)
+        settings = await session.scalar(stmt)
+        if not settings:
+            session.add(BotSettings(id=1, is_contest_active=True))
+            await session.commit()

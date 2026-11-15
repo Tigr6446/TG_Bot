@@ -1,23 +1,32 @@
-from aiogram import Router, F
-from aiogram.types import Message, CallbackQuery, BufferedInputFile 
+from aiogram import Router, F, Bot
+from aiogram.types import Message, CallbackQuery, BufferedInputFile, InlineKeyboardButton
 from aiogram.filters import Command, CommandObject
+from aiogram.fsm.context import FSMContext
+from aiogram.fsm.state import State, StatesGroup
+from aiogram.utils.keyboard import InlineKeyboardBuilder
+from aiogram.enums import ParseMode
+
 from database import AsyncSessionLocal
-from models import Question, User, GameResult, QuizResult, Feedback, AmbassadorApplication, UserActivity
+from models import Question, User, GameResult, QuizResult, Feedback, AmbassadorApplication, UserActivity, BotSettings
 from config import ADMIN_IDS
 from sqlalchemy import select, func
 from datetime import datetime, timedelta
 from services.analytics import log_activity
-import csv, io, zipfile, html
-from keyboards.admin_kb import get_admin_help_kb 
+from keyboards.admin_kb import get_admin_help_kb
+
+import csv, io, zipfile, html, asyncio
 
 router = Router()
 
 def is_admin(message: Message) -> bool:
     return message.from_user.id in ADMIN_IDS
 
+def is_admin_cb(callback: CallbackQuery) -> bool:
+    return callback.from_user.id in ADMIN_IDS
+
 # ---------- ОТВЕТ НА ВОПРОС ----------
 @router.message(Command("reply"), F.func(is_admin))
-async def reply_to_question(message: Message, command: CommandObject, bot):
+async def reply_to_question(message: Message, command: CommandObject, bot: Bot):
     if not command.args:
         await message.reply("❌ Формат: /reply <ID_вопроса> <текст ответа>")
         return
@@ -75,9 +84,6 @@ async def export_feedback(message: Message):
         await message.answer("📭 Нет данных для выгрузки")
         return
     
-    import csv, io
-    from aiogram.types import BufferedInputFile
-    
     output = io.StringIO()
     writer = csv.writer(output, delimiter=';')
     writer.writerow(["id", "user_id", "sdg_id", "usefulness", "interest", "clarity", "created_at"])
@@ -89,7 +95,7 @@ async def export_feedback(message: Message):
 
 # ---------- ЗАЯВКИ ПОСЛАННИКОВ ----------
 @router.message(Command("approve"), F.func(is_admin))
-async def approve_ambassador(message: Message, command: CommandObject, bot):
+async def approve_ambassador(message: Message, command: CommandObject, bot: Bot):
     if not command.args:
         await message.reply("❌ Формат: /approve <ID_заявки>")
         return
@@ -126,7 +132,7 @@ async def approve_ambassador(message: Message, command: CommandObject, bot):
             await message.reply(f"⚠️ Заявка одобрена, но не удалось уведомить: {str(e)}")
 
 @router.message(Command("reject"), F.func(is_admin))
-async def reject_ambassador(message: Message, command: CommandObject, bot):
+async def reject_ambassador(message: Message, command: CommandObject, bot: Bot):
     if not command.args:
         await message.reply("❌ Формат: /reject <ID_заявки> [причина]")
         return
@@ -201,10 +207,6 @@ async def stats_activity(message: Message):
             'viewsdg': '📚 Просмотры ЦУР',
             'view_sdg': '📚 Просмотры ЦУР',
             'quiz': '📝 Квизы',
-            'gamesorting': '♻️ Сортировка мусора (старый лог)',
-            'game_habits': '👍 Правильные привычки',
-            'game_right_wrong': '❓ Что правильно?',
-            'game_story': '📖 Сюжетная игра',
         }
         
         text = f"📊 **Активность за сегодня:** {today_activity}\n\n**За неделю:**\n"
@@ -221,47 +223,17 @@ async def stats_activity(message: Message):
 @router.message(Command("stats_games_popular"), F.func(is_admin))
 async def stats_games_popular(message: Message):
     async with AsyncSessionLocal() as session:
-        stmt = select(
-            UserActivity.details, 
-            func.count()
-        ).where(
-            UserActivity.action == 'game'
-        ).group_by(
-            UserActivity.details
-        ).order_by(
-            func.count().desc()
-        )
+        stmt = select(UserActivity.details, func.count()).where(UserActivity.action == 'game').group_by(UserActivity.details).order_by(func.count().desc())
         result = await session.execute(stmt)
         rows = result.all()
         
         if not rows:
-            await message.answer("📭 Нет данных об играх. Возможно, ещё никто не играл после последнего обновления.")
+            await message.answer("📭 Нет данных об играх.")
             return
-        
-        game_names = {
-            'waste_1_8': '♻️ Сортировка мусора (1-8 кл)',
-            'habits_1_8': '👍 Правильные привычки (1-8 кл)',
-            'rightwrong_1_8': '❓ Что правильно? (1-8 кл)',
-            'story': '📖 Сюжетная игра',
-            # старые ключи для обратной совместимости
-            'wasteyoung': '♻️ Сортировка мусора (старая версия)',
-            'wasteteen': '♻️ Сортировка мусора (старая версия)',
-            'habitsyoung': '👍 Правильные привычки (старая версия)',
-            'habitsteen': '👍 Правильные привычки (старая версия)',
-            'rightwrongyoung': '❓ Что правильно? (старая версия)',
-            'rightwrongteen': '❓ Что правильно? (старая версия)',
-        }
         
         text = "🎮 **Популярность игр:**\n\n"
         for details, count in rows:
-            name = game_names.get(details, details)
-            if count == 1:
-                ending = "запуск"
-            elif 2 <= count <= 4:
-                ending = "запуска"
-            else:
-                ending = "запусков"
-            text += f"• {name}: {count} {ending}\n"
+            text += f"• {details}: {count} запусков\n"
         
         await message.answer(text, parse_mode="Markdown")
 
@@ -269,16 +241,7 @@ async def stats_games_popular(message: Message):
 @router.message(Command("stats_popular"), F.func(is_admin))
 async def stats_popular(message: Message):
     async with AsyncSessionLocal() as session:
-        stmt = select(
-            UserActivity.target_id, 
-            func.count()
-        ).where(
-            UserActivity.action == 'view_sdg'
-        ).group_by(
-            UserActivity.target_id
-        ).order_by(
-            func.count().desc()
-        ).limit(5)
+        stmt = select(UserActivity.target_id, func.count()).where(UserActivity.action == 'view_sdg').group_by(UserActivity.target_id).order_by(func.count().desc()).limit(5)
         result = await session.execute(stmt)
         rows = result.all()
         
@@ -291,15 +254,10 @@ async def stats_popular(message: Message):
             text += f"ЦУР {target_id}: {count} просмотров\n"
         await message.answer(text, parse_mode="Markdown")
 
-        # ---------- ОБРАБОТЧИКИ КНОПОК ИЗ /help ----------
-
-def is_admin_cb(callback: CallbackQuery) -> bool:
-    return callback.from_user.id in ADMIN_IDS
-
+# ---------- ОБРАБОТЧИКИ КНОПОК ИЗ /help ----------
 @router.callback_query(F.data == "admin_export_feedback", F.func(is_admin_cb))
 async def cb_export_feedback(callback: CallbackQuery):
     await callback.message.edit_text("⏳ Готовлю файл отзывов...")
-    
     async with AsyncSessionLocal() as session:
         stmt = select(Feedback).order_by(Feedback.created_at.desc())
         result = await session.execute(stmt)
@@ -320,17 +278,11 @@ async def cb_export_feedback(callback: CallbackQuery):
     await callback.message.edit_text("✅ Файл отправлен выше.", reply_markup=get_admin_help_kb())
     await callback.answer()
 
-
 @router.callback_query(F.data == "admin_export_db", F.func(is_admin_cb))
 async def cb_export_db(callback: CallbackQuery):
-    await callback.message.edit_text("⏳ Собираю базу данных в ZIP-архив. Это может занять пару секунд...")
-    
+    await callback.message.edit_text("⏳ Собираю базу данных в ZIP-архив...")
     zip_buffer = io.BytesIO()
-    tables = [
-        (User, "users"), (Question, "questions"), (QuizResult, "quiz_results"),
-        (GameResult, "game_results"), (AmbassadorApplication, "ambassadors"),
-        (Feedback, "feedback"), (UserActivity, "user_activity")
-    ]
+    tables = [(User, "users"), (Question, "questions"), (QuizResult, "quiz_results"), (GameResult, "game_results"), (AmbassadorApplication, "ambassadors"), (Feedback, "feedback"), (UserActivity, "user_activity")]
     
     async with AsyncSessionLocal() as session:
         with zipfile.ZipFile(zip_buffer, "w", zipfile.ZIP_DEFLATED) as zip_file:
@@ -357,7 +309,6 @@ async def cb_export_db(callback: CallbackQuery):
     await callback.message.edit_text("✅ Архив отправлен выше.", reply_markup=get_admin_help_kb())
     await callback.answer()
 
-
 @router.callback_query(F.data == "admin_show_apps", F.func(is_admin_cb))
 async def cb_show_apps(callback: CallbackQuery):
     await list_applications(callback.message)
@@ -368,8 +319,7 @@ async def cb_show_stats(callback: CallbackQuery):
     await stats_activity(callback.message)
     await callback.answer()
 
-   # ---------- СПИСОК НЕОТВЕЧЕННЫХ ВОПРОСОВ ----------
-
+# ---------- СПИСОК НЕОТВЕЧЕННЫХ ВОПРОСОВ ----------
 async def show_pending_questions_list(message: Message):
     try:
         async with AsyncSessionLocal() as session:
@@ -381,16 +331,12 @@ async def show_pending_questions_list(message: Message):
             await message.answer("✅ <b>Отлично! Неотвеченных вопросов нет.</b>", parse_mode="HTML")
             return
 
-        # Формируем заголовок
         text = f"📋 <b>Вопросы без ответа ({len(questions)}):</b>\n\n"
-        
         for q in questions:
-            # Безопасно экранируем ник и текст, чтобы < и > не ломали HTML
             safe_name = html.escape(str(q.user_name))
             short_text = q.text[:70] + "..." if len(q.text) > 70 else q.text
             safe_text = html.escape(str(short_text))
             
-            # Формируем блок для одного вопроса
             block = (
                 f"❓ <b>#{q.id}</b> | От: {safe_name}\n"
                 f"📝 <i>{safe_text}</i>\n"
@@ -398,15 +344,12 @@ async def show_pending_questions_list(message: Message):
                 f"─────────────────\n"
             )
             
-            # Защита от лимита Telegram (4096 символов).
-            # Если текст становится слишком большим, отправляем текущий и начинаем новый.
             if len(text) + len(block) > 4000:
                 await message.answer(text, parse_mode="HTML")
                 text = f"📋 <b>Продолжение списка ({len(questions)}):</b>\n\n"
             
             text += block
 
-        # Отправляем остаток
         if text.strip():
             await message.answer(text, parse_mode="HTML")
 
@@ -414,13 +357,93 @@ async def show_pending_questions_list(message: Message):
         print(f"ОШИБКА ВЫВОДА ВОПРОСОВ: {e}")
         await message.answer("❌ Произошла ошибка при загрузке списка вопросов.")
 
-# Текстовая команда на всякий случай
-@router.message(Command("pending"), F.func(is_admin))
-async def cmd_pending(message: Message):
-    await show_pending_questions_list(message)
-
-# Обработчик кнопки из меню
 @router.callback_query(F.data == "admin_pending_questions", F.func(is_admin_cb))
 async def cb_pending_questions(callback: CallbackQuery):
     await callback.answer("Загружаю...")
     await show_pending_questions_list(callback.message)
+
+# ---------- НАСТРОЙКИ МОДУЛЕЙ ----------
+@router.callback_query(F.data == "admin_modules", F.func(is_admin_cb))
+async def show_modules(callback: CallbackQuery):
+    async with AsyncSessionLocal() as session:
+        settings = await session.scalar(select(BotSettings).where(BotSettings.id == 1))
+        status = "🟢 ВКЛЮЧЕН" if settings.is_contest_active else "🔴 ВЫКЛЮЧЕН"
+    
+    builder = InlineKeyboardBuilder()
+    builder.row(InlineKeyboardButton(text=f"Конкурс видео: {status}", callback_data="toggle_contest"))
+    builder.row(InlineKeyboardButton(text="◀️ Назад", callback_data="admin_back_to_help"))
+    
+    await callback.message.edit_text(
+        "⚙️ <b>Настройки модулей</b>\n\nНажмите на модуль, чтобы включить или выключить его.",
+        reply_markup=builder.as_markup(),
+        parse_mode="HTML"
+    )
+    await callback.answer()
+
+@router.callback_query(F.data == "toggle_contest", F.func(is_admin_cb))
+async def toggle_contest(callback: CallbackQuery):
+    async with AsyncSessionLocal() as session:
+        settings = await session.scalar(select(BotSettings).where(BotSettings.id == 1))
+        settings.is_contest_active = not settings.is_contest_active
+        await session.commit()
+    await show_modules(callback)
+
+# ---------- МАССОВАЯ РАССЫЛКА ----------
+class BroadcastState(StatesGroup):
+    waiting_for_message = State()
+
+@router.callback_query(F.data == "admin_broadcast", F.func(is_admin_cb))
+async def start_broadcast(callback: CallbackQuery, state: FSMContext):
+    await state.set_state(BroadcastState.waiting_for_message)
+    await callback.message.edit_text(
+        "📢 <b>Режим рассылки</b>\n\n"
+        "Отправьте мне сообщение (текст, фото, видео, файл), которое нужно разослать всем пользователям бота.\n\n"
+        "Для отмены напишите /cancel",
+        parse_mode="HTML",
+        reply_markup=InlineKeyboardBuilder().row(
+            InlineKeyboardButton(text="❌ Отмена", callback_data="admin_back_to_help")
+        ).as_markup()
+    )
+    await callback.answer()
+
+@router.message(BroadcastState.waiting_for_message, F.func(is_admin))
+async def process_broadcast(message: Message, state: FSMContext, bot: Bot):
+    await state.clear()
+
+    async with AsyncSessionLocal() as session:
+        stmt = select(User.id)
+        result = await session.execute(stmt)
+        user_ids = result.scalars().all()
+
+    if not user_ids:
+        await message.answer("📭 В базе нет пользователей.")
+        return
+
+    status_msg = await message.answer(f"⏳ Начинаю рассылку для {len(user_ids)} пользователей...")
+    
+    success = 0
+    failed = 0
+
+    for user_id in user_ids:
+        try:
+            # Копируем сообщение со всеми потрохами: форматирование, стикеры, файлы, медиагруппы
+            await bot.copy_message(
+                chat_id=user_id,
+                from_chat_id=message.chat.id,
+                message_id=message.message_id
+            )
+            success += 1
+        except Exception as e:
+            print(f"❌ Ошибка рассылки для {user_id}: {type(e).__name__} - {e}")
+            failed += 1
+        
+        await asyncio.sleep(0.05)
+
+    await status_msg.edit_text(
+        f"✅ <b>Рассылка завершена!</b>\n\n"
+        f"Успешно доставлено: {success}\n"
+        f"Ошибок (заблокировали бота): {failed}\n\n"
+        f"<i>(Если ошибок много, проверь консоль)</i>",
+        parse_mode="HTML",
+        reply_markup=get_admin_help_kb()
+    )

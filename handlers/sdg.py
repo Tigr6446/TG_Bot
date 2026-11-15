@@ -6,6 +6,8 @@ from utils.constants import SDG_TITLES
 from keyboards.sdg_keyboards import get_sdg_list_kb, get_sdg_detail_kb, get_sdg_back_kb
 from services.analytics import log_activity
 from sqlalchemy import select # <--- ДОБАВЛЕНО
+from aiogram.types import InlineKeyboardButton
+from aiogram.utils.keyboard import InlineKeyboardBuilder
 
 # ДОБАВЛЕНО:
 from database import AsyncSessionLocal
@@ -121,6 +123,56 @@ async def back_to_lecture(callback: CallbackQuery):
     await callback.message.edit_text(
         text,
         reply_markup=get_sdg_detail_kb(sdg_num),
+        parse_mode=ParseMode.HTML
+    )
+    await callback.answer()
+
+
+@router.callback_query(F.data.startswith("video_"))
+async def show_sdg_video(callback: CallbackQuery):
+    """Обработчик кнопки 'Видео'"""
+    sdg_num = int(callback.data.split("_")[1])
+    
+    # Ищем ссылку на видео в базе данных
+    async with AsyncSessionLocal() as session:
+        user = await session.scalar(select(User).where(User.id == callback.from_user.id))
+        age_group = user.age_group if user else "all"
+        
+        stmt = select(SDGContent).where(
+            (SDGContent.sdg_id == sdg_num) & 
+            (SDGContent.age_group.in_([age_group, "all"]))
+        ).order_by(SDGContent.age_group.desc())
+        
+        content = await session.scalar(stmt)
+
+    # Если админ добавил ссылку — показываем кнопку
+    if content and content.video_url:
+        builder = InlineKeyboardBuilder()
+        builder.row(InlineKeyboardButton(text="▶️ Смотреть видео", url=content.video_url))
+        
+        await callback.message.answer(
+            f"🎥 <b>Видео по ЦУР {sdg_num}</b>\n\nНажмите на кнопку ниже, чтобы открыть ролик.",
+            reply_markup=builder.as_markup(),
+            parse_mode=ParseMode.HTML
+        )
+    else:
+        # Если ссылки нет — показываем всплывающее окно (alert)
+        await callback.answer("🎥 Видео для этой ЦУР пока не добавлено администратором.", show_alert=True)
+
+
+@router.callback_query(F.data.startswith("more_"))
+async def show_sdg_more(callback: CallbackQuery):
+    """Обработчик кнопки 'Подробнее'"""
+    sdg_num = int(callback.data.split("_")[1])
+    
+    # Берем официальный длинный текст из constants.py
+    title = SDG_TITLES.get(sdg_num, f"ЦУР {sdg_num}")
+    
+    # Отправляем новым сообщением, чтобы не ломать текущую карточку
+    await callback.message.answer(
+        f"📖 <b>Подробнее о Цели {sdg_num}</b>\n\n"
+        f"{title}\n\n"
+        f"<i>Эта цель направлена на решение глобальных проблем. Подробную информацию и адаптированный под ваш возраст текст можно прочитать в базе знаний ООН или в лекции.</i>",
         parse_mode=ParseMode.HTML
     )
     await callback.answer()

@@ -3,7 +3,6 @@ from aiogram.utils.keyboard import InlineKeyboardBuilder
 
 def get_contest_start_kb():
     builder = InlineKeyboardBuilder()
-    builder.row(InlineKeyboardButton(text="📹 Загрузить видео", callback_data="contest_upload"))
     builder.row(InlineKeyboardButton(text="◀️ В главное меню", callback_data="back_to_main_menu"))
     return builder.as_markup()
 

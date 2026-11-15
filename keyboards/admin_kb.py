@@ -25,4 +25,13 @@ def get_admin_help_kb():
         InlineKeyboardButton(text="📚 Управление контентом ЦУР", callback_data="admin_manage_sdg")
     )
     
+    builder.row(
+        InlineKeyboardButton(text="📢 Сделать рассылку", callback_data="admin_broadcast")
+    )
+
+    builder.row(
+        InlineKeyboardButton(text="⚙️ Настройки модулей", callback_data="admin_modules")
+    )
+    
     return builder.as_markup()
+

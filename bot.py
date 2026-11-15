@@ -5,6 +5,7 @@ from aiogram.enums import ChatType
 from config import BOT_TOKEN, ADMIN_CHAT_ID
 from database import create_table
 
+# Импорт всех роутеров
 from handlers.main_menu import router as main_menu_router
 from handlers.sdg import router as sdg_router
 from handlers.start import router as start_router
@@ -32,21 +33,39 @@ class AdminChatBlocker(BaseMiddleware):
 
         # Если сообщение пришло из АДМИН-ЧАТА
         if chat_id == ADMIN_CHAT_ID:
-            # Разрешаем только админские команды
-            if isinstance(event, Message) and event.text:
-                allowed_commands = ("/reply", "/approve", "/reject", "/pending", "/stats", "/export_feedback", "/help")
-                if event.text.startswith(allowed_commands):
+            # 1. ПРОПУСКАЕМ, ЕСЛИ АДМИН ВВОДИТ ТЕКСТ ДЛЯ ЦУР ИЛИ РАССЫЛКИ (FSM)
+            state = data.get('state')
+            if state:
+                current_state = await state.get_state()
+                if current_state and (
+                    current_state.startswith("ContentForm") or 
+                    current_state.startswith("BroadcastState")
+                ):
                     return await handler(event, data)
-            
-            # Если это нажатие кнопок, НО это кнопки принятия/отклонения видео
-            if isinstance(event, CallbackQuery) and (event.data.startswith("contest_approve_") or event.data.startswith("contest_reject_")):
-                return await handler(event, data)
 
-            # Всё остальное игнорируем
+            # 2. РАЗРЕШАЕМ ВСЕ ТЕКСТОВЫЕ КОМАНДЫ
+            if isinstance(event, Message) and event.text:
+                if event.text.startswith("/"):
+                    return await handler(event, data)
+                # Если это просто болтовня (не команда) — игнорируем
+                return
+
+            # 3. РАЗРЕШАЕМ НУЖНЫЕ КНОПКИ (CALLBACKS)
+            if isinstance(event, CallbackQuery):
+                allowed_callbacks = (
+                    "contest_approve_", "contest_reject_", 
+                    "admin_", 
+                    "edit_sdg_", "edit_age_", "edit_text_", "edit_video_", "edit_clear_"
+                )
+                if any(event.data.startswith(prefix) for prefix in allowed_callbacks):
+                    return await handler(event, data)
+
+            # Всё остальное (не команды и не разрешенные кнопки) игнорируем
             return
 
-        # Если это не админ-чат (например, личка), пропускаем дальше
+        # Если это не админ-чат (например, личка с обычным юзером), пропускаем дальше
         return await handler(event, data)
+    
 
 bot = Bot(token=BOT_TOKEN)
 dp = Dispatcher()
@@ -60,11 +79,13 @@ async def main():
     await create_table()
     print("✅ Таблицы созданы/проверены")
     
+    # 2. Устанавливаем команды для меню бота
     await bot.set_my_commands([
         BotCommand(command="start", description="Главное меню"),
-        BotCommand(command="help", description="Список команд и панель админа")])
+        BotCommand(command="help", description="Список команд и панель админа")
+    ])
     
-    # 2. Подключаем все обработчики
+    # 3. Подключаем все обработчики (роутеры)
     dp.include_router(sdg_router)
     dp.include_router(contest_router)
     dp.include_router(main_menu_router)
@@ -78,7 +99,7 @@ async def main():
     dp.include_router(feedback_router)
     dp.include_router(admin_content_router)
 
-    # 3. Запускаем бота
+    # 4. Запускаем бота
     print("🤖 Бот запущен!")
     await dp.start_polling(bot)
 
