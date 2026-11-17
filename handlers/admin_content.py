@@ -4,6 +4,7 @@ from aiogram.fsm.context import FSMContext
 from aiogram.fsm.state import State, StatesGroup
 from aiogram.utils.keyboard import InlineKeyboardBuilder
 from aiogram.enums import ParseMode
+from urllib.parse import urlparse
 
 from database import AsyncSessionLocal
 from models import SDGContent
@@ -80,7 +81,8 @@ async def show_content_menu(message_or_callback, sdg_id: int, age_group: str, ed
         await message_or_callback.answer(text, reply_markup=builder.as_markup(), parse_mode=ParseMode.HTML)
 
 @router.callback_query(F.data.startswith("edit_age_"), F.func(is_admin_cb))
-async def open_content_menu(callback: CallbackQuery):
+async def open_content_menu(callback: CallbackQuery, state: FSMContext):
+    await state.clear()  # Сбрасываем состояние, если нажали "Отмена" при вводе текста/видео
     parts = callback.data.split("_")
     sdg_id = int(parts[2])
     age = parts[3]
@@ -118,22 +120,26 @@ async def start_edit_video(callback: CallbackQuery, state: FSMContext):
     
     await callback.message.edit_text(
         f"🎥 Отправьте ссылку на видео (YouTube/Rutube) для ЦУР {sdg_id} (возраст: {age}).\n\n"
-        f"Ссылка должна начинаться с http:// или https://",
+        f"Ссылка должна начинаться строго с <b>https://</b>",
         reply_markup=InlineKeyboardBuilder().row(
             InlineKeyboardButton(text="❌ Отмена", callback_data=f"edit_age_{sdg_id}_{age}")
-        ).as_markup()
+        ).as_markup(),
+        parse_mode="HTML"
     )
     await callback.answer()
 
 # Прием текста
 @router.message(ContentForm.waiting_text, F.func(lambda msg: msg.from_user.id in ADMIN_IDS))
 async def save_text(message: Message, state: FSMContext):
+    if not message.text:
+        await message.answer("❌ Пожалуйста, отправьте текстовое сообщение.")
+        return
+
     data = await state.get_data()
     sdg_id, age = data['sdg_id'], data['age_group']
     new_text = message.text
 
     async with AsyncSessionLocal() as session:
-        # Обновляем только текст, видео оставляем как было
         stmt = insert(SDGContent).values(
             sdg_id=sdg_id, age_group=age, description=new_text, video_url=None
         )
@@ -151,14 +157,25 @@ async def save_text(message: Message, state: FSMContext):
 # Прием видео
 @router.message(ContentForm.waiting_video, F.func(lambda msg: msg.from_user.id in ADMIN_IDS))
 async def save_video(message: Message, state: FSMContext):
+    if not message.text:
+        await message.answer("❌ Пожалуйста, отправьте текстовую ссылку.")
+        return
+
     data = await state.get_data()
     sdg_id, age = data['sdg_id'], data['age_group']
     url = message.text.strip()
 
-    if not url.startswith("http"):
-        await message.answer("❌ Это не похоже на ссылку. Ссылка должна начинаться с http:// или https://\nПопробуйте еще раз.")
+    parsed = urlparse(url)
+    if parsed.scheme != "https" or not parsed.netloc or "." not in parsed.netloc:
+        await message.answer(
+            "❌ Небезопасная или некорректная ссылка.\n"
+            "Ссылка должна начинаться строго с <b>https://</b> и вести на реальный сайт.\n"
+            "Попробуйте еще раз:",
+            parse_mode="HTML"
+        )
         return
 
+    # Восстановленный блок сохранения в БД:
     async with AsyncSessionLocal() as session:
         stmt = insert(SDGContent).values(
             sdg_id=sdg_id, age_group=age, description="Текст будет добавлен позже.", video_url=url
@@ -193,7 +210,8 @@ async def clear_content(callback: CallbackQuery):
 
 # Обработчик возврата в админку
 @router.callback_query(F.data == "admin_back_to_help", F.func(is_admin_cb))
-async def back_to_help(callback: CallbackQuery):
+async def back_to_help(callback: CallbackQuery, state: FSMContext):
+    await state.clear()  # Сбрасываем состояние рассылки или редактирования
     from keyboards.admin_kb import get_admin_help_kb
     await callback.message.edit_text(
         "👑 <b>Панель администратора:</b>\nВыберите действие на кнопках ниже.",
