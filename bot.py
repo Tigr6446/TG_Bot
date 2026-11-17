@@ -55,6 +55,7 @@ class AdminChatBlocker(BaseMiddleware):
                 allowed_callbacks = (
                     "contest_approve_", "contest_reject_", 
                     "admin_", 
+                    "toggle_",
                     "edit_sdg_", "edit_age_", "edit_text_", "edit_video_", "edit_clear_"
                 )
                 if any(event.data.startswith(prefix) for prefix in allowed_callbacks):
