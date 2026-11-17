@@ -406,7 +406,17 @@ async def start_broadcast(callback: CallbackQuery, state: FSMContext):
     )
     await callback.answer()
 
-@router.message(BroadcastState.waiting_for_message, F.func(is_admin))
+# 1. Отмена рассылки по команде /cancel
+@router.message(BroadcastState.waiting_for_message, Command("cancel"), F.func(is_admin))
+async def cancel_broadcast(message: Message, state: FSMContext):
+    await state.clear()
+    await message.answer(
+        "❌ Рассылка отменена.",
+        reply_markup=get_admin_help_kb()
+    )
+
+# 2. Обработка сообщения для рассылки (команды через / игнорируются)
+@router.message(BroadcastState.waiting_for_message, ~F.text.startswith("/"), F.func(is_admin))
 async def process_broadcast(message: Message, state: FSMContext, bot: Bot):
     await state.clear()
 
@@ -426,7 +436,6 @@ async def process_broadcast(message: Message, state: FSMContext, bot: Bot):
 
     for user_id in user_ids:
         try:
-            # Копируем сообщение со всеми потрохами: форматирование, стикеры, файлы, медиагруппы
             await bot.copy_message(
                 chat_id=user_id,
                 from_chat_id=message.chat.id,

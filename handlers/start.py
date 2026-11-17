@@ -7,12 +7,20 @@ from sqlalchemy import select
 from keyboards.age_kb import get_age_kb
 from keyboards.main_menu_kb import get_main_kb
 from keyboards.admin_kb import get_admin_help_kb
-from config import ADMIN_IDS
+from config import ADMIN_IDS, ADMIN_CHAT_ID
 
 router = Router()
 
 @router.message(Command("start"))
 async def command_start(message: Message):
+    if message.chat.id == ADMIN_CHAT_ID:
+        await message.answer(
+            "👑 <b>Панель администратора:</b>\nВыберите действие на кнопках ниже.",
+            reply_markup=get_admin_help_kb(),
+            parse_mode="HTML"
+        )
+        return
+    
     async with AsyncSessionLocal() as session:
         stmt = select(User).where(User.id == message.from_user.id)
         result = await session.execute(stmt)

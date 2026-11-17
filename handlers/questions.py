@@ -30,10 +30,20 @@ async def ask_question_start(callback: CallbackQuery, state: FSMContext):
 @router.message(Command("cancel"))
 async def cancel_question(message: Message, state: FSMContext):
     await state.clear()
+
+    if message.chat.id == ADMIN_CHAT_ID:
+        from keyboards.admin_kb import get_admin_help_kb
+        await message.answer(
+            "❌ Действие отменено.",
+            reply_markup=get_admin_help_kb()
+        )
+        return
+
     await message.answer(
         "❌ Вопрос отменён.",
         reply_markup=get_main_kb()
     )
+
 
 # Приём вопроса от пользователя
 @router.message(QuestionForm.text)
